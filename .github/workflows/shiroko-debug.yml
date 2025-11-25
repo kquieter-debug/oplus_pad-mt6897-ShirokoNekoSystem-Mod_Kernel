@@ -1,4 +1,4 @@
-name: KernelSU-Next 构建 (MTK平台)
+name: Sukisu-ultra 构建 (MTK平台)
 on:
   workflow_dispatch:
     inputs:

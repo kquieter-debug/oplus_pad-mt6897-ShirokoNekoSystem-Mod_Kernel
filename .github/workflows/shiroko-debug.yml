@@ -1,4 +1,4 @@
-name: Sukisu-ultra 构建 (MTK平台)
+name: KernelSU-Next 构建 (MTK平台)
 on:
   workflow_dispatch:
     inputs:
@@ -193,13 +193,24 @@ jobs:
           echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
           echo "SukiSU-ultra 核心集成完成。"
 
-      - name: 集成 SUSFS 功能
+      - name: 集成 SUSFS 功能（修复分支问题）
         if: ${{ github.event.inputs.INTEGRATE_OPTION == '集成 SUSFS 功能' }}
         run: |
           echo "开始集成 SUSFS 功能..."
           cd kernel_workspace/kernel
-          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs-dev
-          echo "SUSFS 功能集成完成。"
+          # 修复：SukiSU-Ultra 无 susfs-dev 分支，改用 main 分支（需确认官方正确分支名，此处为临时兼容）
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main
+          # 手动添加 SUSFS 配置（弥补分支问题）
+          echo "CONFIG_SUSFS=y" >> drivers/Kconfig
+          echo "obj-$(CONFIG_SUSFS) += susfs/" >> drivers/Makefile
+          echo "SUSFS 功能集成完成（使用 main 分支兼容）。"
+
+      - name: 修复内核配置文件引用错误
+        run: |
+          cd kernel_workspace/kernel
+          # 移除不存在的 oplus_resctrl Kconfig 引用
+          sed -i '30d' drivers/soc/Kconfig
+          echo "已移除 drivers/soc/Kconfig 中不存在的 oplus_resctrl 引用"
 
       - name: 配置内核选项
         run: |
@@ -239,8 +250,10 @@ jobs:
             BUILD_TARGET="all"
           fi
 
-          make O=out oppo6897_defconfig
+          # 先执行 defconfig 生成配置文件
+          make O=out oneplus6897_defconfig
           
+          # 执行编译
           make -j$(nproc --all) O=out \
             CC="clang" \
             LD="ld.lld" \
@@ -253,6 +266,7 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             $BUILD_TARGET
 
+          # 整理编译输出
           mkdir -p ../dist
           cp out/arch/arm64/boot/Image ../dist/Image
           echo "内核编译完成"

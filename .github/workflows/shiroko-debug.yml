@@ -13,9 +13,9 @@ on:
         type: choice
         description: "设备配置文件"
         required: true
-        default: oppopad3
+        default: onepluspad
         options:
-          - oppopad3
+          - onepluspad
       CPUD:
         type: choice
         description: "处理器代号"
@@ -32,12 +32,12 @@ on:
           - android14
           - android15
       KERNEL_VERSION:
-       type: choice
-       description: "Linux内核版本"
-       required: true
-       default: "6.1"
-       options:
-         - "6.1"
+        type: choice
+        description: "Linux内核版本"
+        required: true
+        default: "6.1"
+        options:
+          - "6.1"
       BUILD_METHOD:
         type: choice
         description: "编译模式"
@@ -50,7 +50,7 @@ on:
         type: string
         description: "自定义内核版本后缀 (留空使用随机生成)"
         required: false
-        default: "ShirokoNekoSystem_Customization-OPad_XinRan"
+        default: "-fuckoplus"
       VFS:
         type: boolean
         description: "启用VFS手动钩子功能"
@@ -66,6 +66,14 @@ on:
         description: "启用快速编译模式 (仅生成Image)"
         required: true
         default: true
+      INTEGRATE_OPTION:
+        type: choice
+        description: "选择要集成的功能 (二选一)"
+        required: true
+        default: "仅集成 SukiSU-ultra"
+        options:
+          - "仅集成 SukiSU-ultra"
+          - "集成 SUSFS 功能"
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -73,7 +81,7 @@ jobs:
       CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
       CCACHE_NOHASHDIR: "true"
       CCACHE_HARDLINK: "true"
-      CCACHE_DIR: /home/runner/.ccache  
+      CCACHE_DIR: /home/runner/.ccache
       CCACHE_MAXSIZE: 8G
     steps:
       - name: 最大化构建空间
@@ -131,12 +139,13 @@ jobs:
           echo "启用VFS: ${{ github.event.inputs.VFS }}"
           echo "启用ZRAM扩展: ${{ github.event.inputs.ZRAM }}"
           echo "快速编译模式: ${{ github.event.inputs.FAST }}"
+          echo "集成选项: ${{ github.event.inputs.INTEGRATE_OPTION }}"
 
       - name: 获取内核源码
         run: |
           mkdir kernel_workspace && cd kernel_workspace
-          git clone --depth=1 https://github.com/oppo-source/android_kernel_oppo_mt6897 -b oppo/mt6897_v_15.0.0_oppopad3 kernel
-          cd kernel
+          git clone --depth=1 https://github.com/kquieter-debug/android_kernel_oneplus_mt6897 -b oneplus/mt6897_v_15.0.0_oneplus_pad
+          mv android_kernel_oneplus_mt6897 kernel
           echo "内核源码获取完成"
 
       - name: 清理版本标识
@@ -150,7 +159,13 @@ jobs:
         run: |
           cd kernel_workspace/kernel
           sed -i '/^res=/a res=$(echo "$res" | sed -E '\''s/-[0-9]+-o-g[0-9a-f]{7,}//'\'')' scripts/setlocalversion
-          sed -i "\$s|echo \"\\\$res\"|echo \"\$res-${{ github.event.inputs.SUFFIX }}\"|" scripts/setlocalversion
+          SUFFIX="${{ github.event.inputs.SUFFIX }}"
+          if [ "${{ github.event.inputs.INTEGRATE_OPTION }}" = "仅集成 SukiSU-ultra" ]; then
+            SUFFIX="${SUFFIX}-KSU${{ env.KSUVER }}"
+          elif [ "${{ github.event.inputs.INTEGRATE_OPTION }}" = "集成 SUSFS 功能" ]; then
+            SUFFIX="${SUFFIX}-SUSFS"
+          fi
+          sed -i "\$s|echo \"\\\$res\"|echo \"\$res-$SUFFIX\"|" scripts/setlocalversion
 
       - name: 生成随机版本后缀
         if: ${{ github.event.inputs.SUFFIX == '' }}
@@ -159,50 +174,50 @@ jobs:
           RANDOM_DIGIT=$(od -An -N1 -tu1 < /dev/urandom | tr -d '[:space:]' | awk '{print $1 % 11}')
           RANDOM_HASH=$(od -An -N7 -tx1 /dev/urandom | tr -d ' \n')
           RANDOM_SUFFIX="${RANDOM_DIGIT}-o-g${RANDOM_HASH}"
+          if [ "${{ github.event.inputs.INTEGRATE_OPTION }}" = "仅集成 SukiSU-ultra" ]; then
+            RANDOM_SUFFIX="${RANDOM_SUFFIX}-KSU${{ env.KSUVER }}"
+          elif [ "${{ github.event.inputs.INTEGRATE_OPTION }}" = "集成 SUSFS 功能" ]; then
+            RANDOM_SUFFIX="${RANDOM_SUFFIX}-SUSFS"
+          fi
           sed -i '/^res=/a res=$(echo "$res" | sed -E '\''s/-[0-9]+-o-g[0-9a-fA-F]{7,}//g'\'')' scripts/setlocalversion || true
           sed -i "\$s|echo \"\\\$res\"|echo \"\$res-$RANDOM_SUFFIX\"|" scripts/setlocalversion || true
 
-      - name: 集成KernelSU-Next
+      - name: 集成 SukiSU-ultra 核心
+        if: ${{ github.event.inputs.INTEGRATE_OPTION == '仅集成 SukiSU-ultra' }}
         run: |
+          echo "开始集成 SukiSU-ultra 核心..."
           cd kernel_workspace/kernel
-          curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -s next
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main
           cd ./KernelSU*
           KSU_VERSION=$(expr $(/usr/bin/git rev-list --count main) "+" 10606)
           echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
-          export KSU_VERSION=$KSU_VERSION
+          echo "SukiSU-ultra 核心集成完成。"
 
-      # - name: 应用KernelSU补丁
-        # run: |
-          # cd kernel_workspace
-          # git clone https://github.com/SukiSU-Ultra/SukiSU_patch.git
-          # cd kernel
-          
-      # - name: 应用隐藏功能补丁
-        # run: |
-          # cd kernel_workspace/kernel
-          # cp ../SukiSU_patch/69_hide_stuff.patch ./
-          # patch -p1 -F 3 < 69_hide_stuff.patch
-
-      # - name: 应用VFS钩子补丁
-        # run: |
-          # cd kernel_workspace/kernel
-          # if [ "${{ github.event.inputs.VFS }}" = "true" ]; then
-            # cp ../SukiSU_patch/hooks/syscall_hooks.patch ./
-            # patch -p1 -F 3 < syscall_hooks.patch
-          # fi
+      - name: 集成 SUSFS 功能
+        if: ${{ github.event.inputs.INTEGRATE_OPTION == '集成 SUSFS 功能' }}
+        run: |
+          echo "开始集成 SUSFS 功能..."
+          cd kernel_workspace/kernel
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs-dev
+          echo "SUSFS 功能集成完成。"
 
       - name: 配置内核选项
         run: |
           cd kernel_workspace/kernel
-          CONFIG_FILE=arch/arm64/configs/oppo6897_defconfig
+          CONFIG_FILE=arch/arm64/configs/oneplus6897_defconfig
 
-          # KernelSU配置
-          echo "CONFIG_KSU=y" >> "$CONFIG_FILE"
-          echo "CONFIG_OVERLAY_FS=y" >> "$CONFIG_FILE"  
-          echo "CONFIG_KPROBES=y" >> "$CONFIG_FILE"  
-          echo "CONFIG_KSU_WITH_KPROBES=y" >> "$CONFIG_FILE"
+          if [ "${{ github.event.inputs.INTEGRATE_OPTION }}" = "仅集成 SukiSU-ultra" ]; then
+            echo "配置 KernelSU 相关选项..."
+            echo "CONFIG_KSU=y" >> "$CONFIG_FILE"
+            echo "CONFIG_OVERLAY_FS=y" >> "$CONFIG_FILE"
+            echo "CONFIG_KPROBES=y" >> "$CONFIG_FILE"
+            echo "CONFIG_KSU_WITH_KPROBES=y" >> "$CONFIG_FILE"
+          elif [ "${{ github.event.inputs.INTEGRATE_OPTION }}" = "集成 SUSFS 功能" ]; then
+            echo "配置 SUSFS 相关选项..."
+            echo "CONFIG_SUSFS=y" >> "$CONFIG_FILE"
+            echo "CONFIG_FUSE_FS=y" >> "$CONFIG_FILE"
+          fi
 
-          # ZRAM扩展配置
           if [ "${{ github.event.inputs.ZRAM }}" = "true" ]; then
             echo "CONFIG_ZRAM_DEF_COMP=\"zstd\"" >> "$CONFIG_FILE"
             echo "CONFIG_ZRAM_DEF_COMP_ZSTD=y" >> "$CONFIG_FILE"
@@ -218,17 +233,14 @@ jobs:
           export SUBARCH=arm64
           export DTC_EXT=dtc
           
-          # 设置编译目标
           if [ "${{ github.event.inputs.FAST }}" = "true" ]; then
             BUILD_TARGET="Image"
           else
             BUILD_TARGET="all"
           fi
 
-          # 配置编译环境
           make O=out oppo6897_defconfig
           
-          # 执行编译
           make -j$(nproc --all) O=out \
             CC="clang" \
             LD="ld.lld" \
@@ -241,7 +253,6 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             $BUILD_TARGET
 
-          # 整理编译输出
           mkdir -p ../dist
           cp out/arch/arm64/boot/Image ../dist/Image
           echo "内核编译完成"
@@ -255,10 +266,18 @@ jobs:
       - name: 生成刷机包后缀
         id: suffix
         run: |
-          echo "value=${{ github.event.inputs.VFS == 'true' && '_VFS' || '' }}${{ github.event.inputs.ZRAM == 'true' && '_ZSTD' || '' }}" >> $GITHUB_OUTPUT
+          BASE_SUFFIX=""
+          [ "${{ github.event.inputs.VFS }}" = "true" ] && BASE_SUFFIX+="_VFS"
+          [ "${{ github.event.inputs.ZRAM }}" = "true" ] && BASE_SUFFIX+="_ZSTD"
+
+          if [ "${{ github.event.inputs.INTEGRATE_OPTION }}" = "仅集成 SukiSU-ultra" ]; then
+            echo "value=${BASE_SUFFIX}_KSU${{ env.KSUVER }}" >> $GITHUB_OUTPUT
+          elif [ "${{ github.event.inputs.INTEGRATE_OPTION }}" = "集成 SUSFS 功能" ]; then
+            echo "value=${BASE_SUFFIX}_SUSFS" >> $GITHUB_OUTPUT
+          fi
 
       - name: 上传刷机包
         uses: actions/upload-artifact@v4
         with:
-          name: Kernel_OPPOPad3_${{ env.KSUVER }}_MT6897${{ steps.suffix.outputs.value }}
+          name: Kernel_OneplusPad_MT6897${{ steps.suffix.outputs.value }}
           path: ./AnyKernel3/*

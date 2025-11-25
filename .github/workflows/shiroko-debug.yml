@@ -154,6 +154,25 @@ jobs:
           sed -i 's/ -dirty//g' scripts/setlocalversion || true
           sed -i '$i res=$(echo "$res" | sed '\''s/-dirty//g'\'')' scripts/setlocalversion
 
+      - name: 全局清理 oplus 相关无效 Kconfig 引用
+        run: |
+          cd kernel_workspace/kernel
+          echo "开始全局搜索并清理 oplus 相关无效 Kconfig 引用..."
+          # 1. 搜索所有 Kconfig 文件中包含 "oplus" 的引用行
+          SEARCH_RESULT=$(grep -r "source.*oplus" --include="Kconfig*" .)
+          if [ -z "$SEARCH_RESULT" ]; then
+            echo "未找到 oplus 相关无效引用"
+          else
+            echo "找到以下无效引用，开始清理："
+            echo "$SEARCH_RESULT"
+            # 2. 批量删除所有包含 "source.*oplus" 的行（使用 ; 分隔多个文件操作）
+            grep -r "source.*oplus" --include="Kconfig*" . | awk -F: '{print $1}' | sort -u | while read -r file; do
+              sed -i '/source.*oplus/d' "$file"
+              echo "已清理文件: $file"
+            done
+          fi
+          echo "全局清理完成！"
+
       - name: 设置自定义版本后缀
         if: ${{ github.event.inputs.SUFFIX != '' }}
         run: |
@@ -198,26 +217,12 @@ jobs:
         run: |
           echo "开始集成 SUSFS 功能..."
           cd kernel_workspace/kernel
-          # 修复1：使用 main 分支兼容（SukiSU-Ultra 无 susfs-dev 分支）
+          # 使用 main 分支兼容（SukiSU-Ultra 无 susfs-dev 分支）
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main
-          # 修复2：修正 Makefile 语法错误（原 $(CONFIG_SUSFS) 未解析，改为固定 obj-y）
+          # 修正 Makefile 语法错误
           echo "CONFIG_SUSFS=y" >> drivers/Kconfig
-          echo "obj-y += susfs/" >> drivers/Makefile  # 关键修复：删除 $(CONFIG_SUSFS)，直接用 obj-y 启用
-          echo "SUSFS 功能集成完成（使用 main 分支兼容，修复语法错误）。"
-
-      - name: 彻底清理无效 Kconfig 引用（关键修复）
-        run: |
-          cd kernel_workspace/kernel
-          # 修复3：删除 drivers/soc/Kconfig 中所有 oplus 相关无效引用（包括第30行resctrl、第31行storage）
-          # 先查看第30-31行内容，确保删除目标正确
-          echo "清理前 drivers/soc/Kconfig 第30-31行内容："
-          sed -n '30,31p' drivers/soc/Kconfig || true
-          # 删除包含 "drivers/soc/oplus/" 的所有行（彻底清理无效引用）
-          sed -i '/drivers\/soc\/oplus\//d' drivers/soc/Kconfig
-          echo "已彻底删除 drivers/soc/Kconfig 中所有 oplus 相关无效引用"
-          # 验证清理结果
-          echo "清理后 drivers/soc/Kconfig 中是否还有 oplus 引用："
-          grep -n "oplus" drivers/soc/Kconfig || echo "无残留 oplus 引用"
+          echo "obj-y += susfs/" >> drivers/Makefile
+          echo "SUSFS 功能集成完成。"
 
       - name: 配置内核选项
         run: |
@@ -239,7 +244,7 @@ jobs:
           if [ "${{ github.event.inputs.ZRAM }}" = "true" ]; then
             echo "CONFIG_ZRAM_DEF_COMP=\"zstd\"" >> "$CONFIG_FILE"
             echo "CONFIG_ZRAM_DEF_COMP_ZSTD=y" >> "$CONFIG_FILE"
-            echo "CONFIG_CRYPTO_ZRAM=y" >> "$CONFIG_FILE"  # 修复：原 CONFIG_CRYPTO_ZSTD 可能有误，改为 ZRAM 相关配置
+            echo "CONFIG_CRYPTO_ZRAM=y" >> "$CONFIG_FILE"
             echo "CONFIG_ZRAM_MULTI_COMP=y" >> "$CONFIG_FILE"
           fi
 
@@ -257,13 +262,13 @@ jobs:
             BUILD_TARGET="all"
           fi
 
-          # 执行 defconfig 生成配置文件（已修复无效引用，可正常执行）
+          # 执行 defconfig 生成配置文件（已全局清理无效引用）
           make O=out oneplus6897_defconfig
           
-          # 执行编译，增加 -j 并发数限制（避免资源耗尽）
-          make -j$(($(nproc --all) - 2)) O=out \  # 关键优化：预留2个CPU核心，防止编译崩溃
-            CC="clang-20" \  # 修复：指定 clang-20 版本，避免版本冲突
-            LD="ld.lld-20" \  # 修复：指定 ld.lld-20 版本，匹配 LLVM 20 工具链
+          # 执行编译，预留 CPU 核心防止崩溃
+          make -j$(($(nproc --all) - 2)) O=out \
+            CC="clang-20" \
+            LD="ld.lld-20" \
             AR="llvm-ar-20" \
             NM="llvm-nm-20" \
             OBJCOPY="llvm-objcopy-20" \
@@ -273,13 +278,13 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             $BUILD_TARGET
 
-          # 整理编译输出
+          # 校验并整理编译输出
           mkdir -p ../dist
           if [ -f "out/arch/arm64/boot/Image" ]; then
             cp out/arch/arm64/boot/Image ../dist/Image
             echo "内核编译完成，Image 文件已生成"
           else
-            echo "错误：未找到编译生成的 Image 文件"
+            echo "错误：未找到编译生成的 Image 文件，编译失败！"
             exit 1
           fi
 
@@ -291,7 +296,7 @@ jobs:
             cp kernel_workspace/dist/Image ./AnyKernel3/Image
             echo "AnyKernel3 刷机包准备完成"
           else
-            echo "错误：无法找到 Image 文件，刷机包准备失败"
+            echo "错误：无法找到 Image 文件，刷机包准备失败！"
             exit 1
           fi
 

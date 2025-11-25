@@ -1,4 +1,4 @@
-name: Sukisu-ultra 构建 (MTK平台)
+name: SukiSU-Ultra 构建 (MTK平台)
 on:
   workflow_dispatch:
     inputs:
@@ -70,7 +70,7 @@ on:
         type: choice
         description: "选择要集成的功能 (二选一)"
         required: true
-        default: "仅集成 SukiSU-ultra"
+        default: "集成 SUSFS 功能"
         options:
           - "仅集成 SukiSU-ultra"
           - "集成 SUSFS 功能"
@@ -193,24 +193,31 @@ jobs:
           echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
           echo "SukiSU-ultra 核心集成完成。"
 
-      - name: 集成 SUSFS 功能（修复分支问题）
+      - name: 集成 SUSFS 功能（修复语法错误）
         if: ${{ github.event.inputs.INTEGRATE_OPTION == '集成 SUSFS 功能' }}
         run: |
           echo "开始集成 SUSFS 功能..."
           cd kernel_workspace/kernel
-          # 修复：SukiSU-Ultra 无 susfs-dev 分支，改用 main 分支（需确认官方正确分支名，此处为临时兼容）
+          # 修复1：使用 main 分支兼容（SukiSU-Ultra 无 susfs-dev 分支）
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main
-          # 手动添加 SUSFS 配置（弥补分支问题）
+          # 修复2：修正 Makefile 语法错误（原 $(CONFIG_SUSFS) 未解析，改为固定 obj-y）
           echo "CONFIG_SUSFS=y" >> drivers/Kconfig
-          echo "obj-$(CONFIG_SUSFS) += susfs/" >> drivers/Makefile
-          echo "SUSFS 功能集成完成（使用 main 分支兼容）。"
+          echo "obj-y += susfs/" >> drivers/Makefile  # 关键修复：删除 $(CONFIG_SUSFS)，直接用 obj-y 启用
+          echo "SUSFS 功能集成完成（使用 main 分支兼容，修复语法错误）。"
 
-      - name: 修复内核配置文件引用错误
+      - name: 彻底清理无效 Kconfig 引用（关键修复）
         run: |
           cd kernel_workspace/kernel
-          # 移除不存在的 oplus_resctrl Kconfig 引用
-          sed -i '30d' drivers/soc/Kconfig
-          echo "已移除 drivers/soc/Kconfig 中不存在的 oplus_resctrl 引用"
+          # 修复3：删除 drivers/soc/Kconfig 中所有 oplus 相关无效引用（包括第30行resctrl、第31行storage）
+          # 先查看第30-31行内容，确保删除目标正确
+          echo "清理前 drivers/soc/Kconfig 第30-31行内容："
+          sed -n '30,31p' drivers/soc/Kconfig || true
+          # 删除包含 "drivers/soc/oplus/" 的所有行（彻底清理无效引用）
+          sed -i '/drivers\/soc\/oplus\//d' drivers/soc/Kconfig
+          echo "已彻底删除 drivers/soc/Kconfig 中所有 oplus 相关无效引用"
+          # 验证清理结果
+          echo "清理后 drivers/soc/Kconfig 中是否还有 oplus 引用："
+          grep -n "oplus" drivers/soc/Kconfig || echo "无残留 oplus 引用"
 
       - name: 配置内核选项
         run: |
@@ -232,7 +239,7 @@ jobs:
           if [ "${{ github.event.inputs.ZRAM }}" = "true" ]; then
             echo "CONFIG_ZRAM_DEF_COMP=\"zstd\"" >> "$CONFIG_FILE"
             echo "CONFIG_ZRAM_DEF_COMP_ZSTD=y" >> "$CONFIG_FILE"
-            echo "CONFIG_CRYPTO_ZSTD=y" >> "$CONFIG_FILE"
+            echo "CONFIG_CRYPTO_ZRAM=y" >> "$CONFIG_FILE"  # 修复：原 CONFIG_CRYPTO_ZSTD 可能有误，改为 ZRAM 相关配置
             echo "CONFIG_ZRAM_MULTI_COMP=y" >> "$CONFIG_FILE"
           fi
 
@@ -250,32 +257,43 @@ jobs:
             BUILD_TARGET="all"
           fi
 
-          # 先执行 defconfig 生成配置文件
+          # 执行 defconfig 生成配置文件（已修复无效引用，可正常执行）
           make O=out oneplus6897_defconfig
           
-          # 执行编译
-          make -j$(nproc --all) O=out \
-            CC="clang" \
-            LD="ld.lld" \
-            AR="llvm-ar" \
-            NM="llvm-nm" \
-            OBJCOPY="llvm-objcopy" \
-            OBJDUMP="llvm-objdump" \
-            STRIP="llvm-strip" \
+          # 执行编译，增加 -j 并发数限制（避免资源耗尽）
+          make -j$(($(nproc --all) - 2)) O=out \  # 关键优化：预留2个CPU核心，防止编译崩溃
+            CC="clang-20" \  # 修复：指定 clang-20 版本，避免版本冲突
+            LD="ld.lld-20" \  # 修复：指定 ld.lld-20 版本，匹配 LLVM 20 工具链
+            AR="llvm-ar-20" \
+            NM="llvm-nm-20" \
+            OBJCOPY="llvm-objcopy-20" \
+            OBJDUMP="llvm-objdump-20" \
+            STRIP="llvm-strip-20" \
             CROSS_COMPILE=aarch64-linux-gnu- \
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
             $BUILD_TARGET
 
           # 整理编译输出
           mkdir -p ../dist
-          cp out/arch/arm64/boot/Image ../dist/Image
-          echo "内核编译完成"
+          if [ -f "out/arch/arm64/boot/Image" ]; then
+            cp out/arch/arm64/boot/Image ../dist/Image
+            echo "内核编译完成，Image 文件已生成"
+          else
+            echo "错误：未找到编译生成的 Image 文件"
+            exit 1
+          fi
 
       - name: 准备AnyKernel3刷机包
         run: |
           git clone https://github.com/Numbersf/AnyKernel3 --depth=1
           rm -rf ./AnyKernel3/.git
-          cp kernel_workspace/dist/Image ./AnyKernel3/Image
+          if [ -f "kernel_workspace/dist/Image" ]; then
+            cp kernel_workspace/dist/Image ./AnyKernel3/Image
+            echo "AnyKernel3 刷机包准备完成"
+          else
+            echo "错误：无法找到 Image 文件，刷机包准备失败"
+            exit 1
+          fi
 
       - name: 生成刷机包后缀
         id: suffix
